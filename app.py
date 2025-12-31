@@ -1266,22 +1266,6 @@ else:
     </div>
     ''', unsafe_allow_html=True)
 
-    # Show example
-    with st.expander("💡 Example Output"):
-        st.markdown("""
-        **Subreddit:** r/GooglePixel  
-        **Posts Analyzed:** 25  
-        
-        **Executive Summary:**  
-        Analysis of 25 recent posts reveals mixed sentiment (Positive: 32%, Neutral: 28%, Negative: 40%). 
-        Key discussion areas include Hardware Quality, Camera & Photography, Customer Support. 
-        Notable concerns include hardware defects and warranty issues.
-        
-        **Themes Detected:**
-        - 🔴 Hardware Quality — Predominantly negative (65%). Users expressing frustration.
-        - 🟢 Camera & Photography — Mostly positive (72%). Users are satisfied.
-        - ⚪ Customer Support — Mixed feedback with 15 mentions.
-        """)
 
 
 # Footer (always visible)
