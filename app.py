@@ -81,71 +81,66 @@ class CleanPost:
     comments: int
     date: str
 
-STRATEGY_PROMPT = '''You are the **Head of Product Strategy** for a major technology firm. You are analyzing raw user feedback to create a **Engineering & Strategy Dashboard**.
+STRATEGY_PROMPT = '''You are the **Head of Product Strategy** for the source brand. You are conducting a competitive analysis.
 
-**YOUR GOAL:**
-Process the provided clusters of user feedback and output a list of distinct, actionable Product Tickets.
-
-**INPUT DATA CONTEXT:**
-- You will receive a list of "Clusters" (groups of similar posts).
-- Each cluster contains: `cluster_size` (Frequency), `sample_posts` (Evidence).
-- `source_brand`: The main brand being analyzed.
-- `competitor_brand`: The brand for comparison.
+**INPUT DATA STRUCTURE:**
+1. `source_clusters`: Feedback specifically about the SOURCE BRAND.
+2. `competitor_clusters`: Feedback specifically about the COMPETITOR BRAND.
 
 ---
 
-### STEP 1: NICHE & CONTEXT REASONING ("The Smart Filter")
-Before analyzing, determine the **Shared Battleground**.
-- IF Source="Samsung" and Competitor="Apple":
-  - Battleground = **"Premium Smartphones & Ecosystem"**.
-  - Action: IGNORE complaints about Samsung Fridges or Apple TV unless they relate to the phone ecosystem.
-  - Action: COMPARE only overlapping features (Camera, Battery, UI, Support).
-- IF no overlap exists (e.g. Education vs Tech), mark as "Niche Mismatch" and skip comparison.
+### MISSION 1: PRODUCT TICKET GENERATION (Source Brand Only)
+**CRITICAL RULE:** You must generate Product Tickets **ONLY** based on `source_clusters`.
+- **DO NOT** create a ticket for an issue found in `competitor_clusters`.
+- If the competitor has a broken camera, that is **NOT** a ticket for us. That is Competitor Intelligence.
+- **Verify:** Before generating a ticket, ask: "Did this user complain about the SOURCE BRAND?" If no, SKIP.
 
-### STEP 2: CLUSTER-TO-TICKET CONVERSION
-**CRITICAL INSTRUCTION:** Do not summarize multiple issues into one. If users report "Camera Crash" and "Camera Lens Flare", these are **TWO** separate tickets.
-
-For **EVERY** cluster provided:
-1.  **Validate:** Is this a genuine product issue/feature request? (Ignore "Shipping delays" or "Fanboy wars").
-2.  **Triangulate Root Cause:**
-    - *Symptom:* "FaceID fails in dark."
-    - *Inference:* "IR Sensor sensitivity calibration issue."
-3.  **Assign Severity:**
-    - **P0 (Critical):** Data loss, Security, App Crash, inability to use core feature.
-    - **P1 (High):** Major broken feature, significant friction.
-    - **P2 (Medium):** UI annoyance, minor bug.
-4.  **Extract Evidence:** You **MUST** find the exact quote and URL from the provided samples.
+**Analysis Logic:**
+1. **Triangulate Root Cause:** (e.g., Symptom: "FaceID fails" -> Cause: "IR Sensor calibration").
+2. **Assign Severity:** P0 (Critical/Blocker) to P2 (Minor).
 
 ---
 
-### STEP 3: OUTPUT JSON SCHEMA
+### MISSION 2: COMPETITOR WARGAMING (Us vs. Them)
+Compare `source_clusters` against `competitor_clusters` to find specific feature gaps.
+
+**Logic for "Winner":**
+- If SOURCE users praise Battery, and COMPETITOR users complain about Battery -> Winner: SOURCE BRAND NAME.
+- If SOURCE users complain about Camera, and COMPETITOR users praise Camera -> Winner: COMPETITOR BRAND NAME.
+
+**Constraint:**
+- The `winner_name` field MUST be the exact string of the brand name provided in the input. Do not use "Source" or "Competitor".
+
+---
+
+### OUTPUT JSON SCHEMA
 
 Output ONLY valid JSON. No markdown, no explanation.
 
 {
   "dashboard_meta": {
     "analysis_period": "Last 30 Days",
-    "battleground_detected": "String (e.g. 'Flagship Mobile Computing')",
-    "compatibility_warning": "String (or null)"
+    "battleground_detected": "String",
+    "compatibility_warning": "String | null"
   },
   "product_tickets": [
     {
       "ticket_id": "TKT-101",
-      "title": "String (Engineering style, e.g., 'Optimization failure in 120Hz Refresh Rate')",
+      "title": "String (JIRA Style)",
       "category": "Bug | Feature Gap | UX Debt | Performance",
       "status_badge": {
         "severity": "P0 | P1 | P2",
-        "frequency_label": "String (e.g. '🔥 Impacting 140+ Users')"
+        "frequency_label": "String"
       },
       "pm_analysis": {
-        "user_pain": "String (The human experience)",
-        "technical_hypothesis": "String (The engineering reason)",
-        "strategic_recommendation": "String (Specific action, e.g. 'Rollback Driver v2.4')"
+        "user_pain": "String",
+        "technical_hypothesis": "String",
+        "strategic_recommendation": "String"
       },
       "evidence": {
-        "direct_quote": "String (Verbatim text)",
+        "direct_quote": "String",
         "user": "String",
-        "source_url": "String (Must match input URL exactly)"
+        "source_url": "String"
       }
     }
   ],
@@ -153,9 +148,9 @@ Output ONLY valid JSON. No markdown, no explanation.
     "active": true,
     "differentiation_matrix": [
       {
-        "feature": "String (e.g. 'Battery Management')",
-        "winner": "Source | Competitor",
-        "insight": "String (e.g. 'Competitor users praise standby time; Source users report 10% drain overnight.')",
+        "feature": "String (e.g. 'Low Light Photography')",
+        "winner_name": "String (Exact Brand Name)",
+        "insight": "String (Explain WHY they won)",
         "evidence_quote": "String"
       }
     ]
@@ -329,7 +324,7 @@ class StrategyIntelligenceEngine:
             comp = None
             ci = data.get('competitor_intelligence', {})
             if ci.get('active'):
-                matrix = [DifferentiationItem(feature=item.get('feature', ''), winner=item.get('winner', ''), insight=item.get('insight', ''), evidence_quote=item.get('evidence_quote', '')) for item in ci.get('differentiation_matrix', [])]
+                matrix = [DifferentiationItem(feature=item.get('feature', ''), winner=item.get('winner_name', item.get('winner', 'Unknown')), insight=item.get('insight', ''), evidence_quote=item.get('evidence_quote', '')) for item in ci.get('differentiation_matrix', [])]
                 comp = CompetitorIntelligence(active=True, differentiation_matrix=matrix)
             
             return StrategyDashboard(dashboard_meta=meta, product_tickets=tickets, competitor_intelligence=comp)
@@ -374,16 +369,13 @@ def render_sidebar():
         competitor = st.text_input("Competitor", value="", placeholder="e.g., samsung", label_visibility="collapsed")
         enable_comp = st.checkbox("Enable Comparison", value=bool(competitor))
         
-        st.subheader("⏰ Time Range")
-        days_back = st.slider("Days to analyze", 7, 90, 30, 7)
-        
         st.subheader("💬 Engagement Filter")
         min_comments = st.slider("Min comments", 1, 20, 5, 1)
         
         st.subheader("📊 Depth")
         max_posts = st.slider("Max posts", 10, 100, 30, 10)
         
-        return source, competitor if enable_comp else "", days_back, min_comments, max_posts
+        return source, competitor if enable_comp else "", min_comments, max_posts
 
 def render_header():
     st.title("🔬 DeepSight Pro")
@@ -444,8 +436,9 @@ def render_ticket(ticket: ProductTicket):
             if ticket.evidence.source_url:
                 st.markdown(f"[🔗 View Original Post]({ticket.evidence.source_url})")
 
-def render_differentiation_matrix(comp: CompetitorIntelligence):
+def render_differentiation_matrix(comp: CompetitorIntelligence, source_brand_name: str):
     st.subheader("⚔️ Differentiation Matrix")
+    my_brand = source_brand_name.strip().lower()
     
     for item in comp.differentiation_matrix:
         with st.container(border=True):
@@ -453,11 +446,13 @@ def render_differentiation_matrix(comp: CompetitorIntelligence):
             
             with col1:
                 st.markdown(f"**{item.feature}**")
+            
+            winner = item.winner.lower()
             with col2:
-                if item.winner.lower() == "source":
-                    st.success("✅ You Win")
+                if my_brand in winner or winner in my_brand:
+                    st.success(f"✅ {source_brand_name} Wins")
                 else:
-                    st.error("❌ They Win")
+                    st.error(f"❌ {item.winner} Wins")
             with col3:
                 st.caption(item.insight)
             
@@ -482,7 +477,7 @@ def render_results(dashboard: StrategyDashboard, post_count: int):
     st.divider()
     
     if dashboard.competitor_intelligence and dashboard.competitor_intelligence.active:
-        render_differentiation_matrix(dashboard.competitor_intelligence)
+        render_differentiation_matrix(dashboard.competitor_intelligence, st.session_state.get('source_name', ''))
         st.divider()
     
     tickets = dashboard.product_tickets
@@ -505,9 +500,61 @@ def render_results(dashboard: StrategyDashboard, post_count: int):
             for ticket in p2_tickets:
                 render_ticket(ticket)
 
+def render_raw_posts(source_posts: List[CleanPost], source_name: str, comp_posts: List[CleanPost] = None, comp_name: str = None):
+    st.divider()
+    st.subheader("📄 Raw Posts Used for Analysis")
+    
+    if comp_posts and comp_name:
+        tab1, tab2 = st.tabs([f"r/{source_name} ({len(source_posts)})", f"r/{comp_name} ({len(comp_posts)})"])
+        
+        with tab1:
+            for post in source_posts:
+                with st.container(border=True):
+                    st.markdown(f"**{post.text.split('BODY:')[0].replace('TITLE:', '').strip()}**")
+                    body = post.text.split('BODY:')[1].strip() if 'BODY:' in post.text else ''
+                    if body:
+                        st.caption(body[:200] + ('...' if len(body) > 200 else ''))
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"💬 {post.comments}")
+                    with col2:
+                        st.caption(f"📅 {post.date}")
+                    with col3:
+                        st.caption(f"[🔗 Link]({post.url})")
+        
+        with tab2:
+            for post in comp_posts:
+                with st.container(border=True):
+                    st.markdown(f"**{post.text.split('BODY:')[0].replace('TITLE:', '').strip()}**")
+                    body = post.text.split('BODY:')[1].strip() if 'BODY:' in post.text else ''
+                    if body:
+                        st.caption(body[:200] + ('...' if len(body) > 200 else ''))
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"💬 {post.comments}")
+                    with col2:
+                        st.caption(f"📅 {post.date}")
+                    with col3:
+                        st.caption(f"[🔗 Link]({post.url})")
+    else:
+        with st.expander(f"r/{source_name} ({len(source_posts)} posts)"):
+            for post in source_posts:
+                with st.container(border=True):
+                    st.markdown(f"**{post.text.split('BODY:')[0].replace('TITLE:', '').strip()}**")
+                    body = post.text.split('BODY:')[1].strip() if 'BODY:' in post.text else ''
+                    if body:
+                        st.caption(body[:200] + ('...' if len(body) > 200 else ''))
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"💬 {post.comments}")
+                    with col2:
+                        st.caption(f"📅 {post.date}")
+                    with col3:
+                        st.caption(f"[🔗 Link]({post.url})")
+
 def main():
     setup_page()
-    source, competitor, days_back, min_comments, max_posts = render_sidebar()
+    source, competitor, min_comments, max_posts = render_sidebar()
     api_key = get_api_key()
     
     render_header()
@@ -526,7 +573,10 @@ def main():
         with st.status("🔍 Running Strategy Analysis...", expanded=True) as status:
             def log(m): st.write(m)
             
-            source_posts = fetcher.fetch_high_signal_posts(source, days_back, min_comments, max_posts, log)
+            # Limit posts: 20 each for comparison, 50 for single analysis
+            effective_max = min(max_posts, 20) if competitor else min(max_posts, 50)
+            
+            source_posts = fetcher.fetch_high_signal_posts(source, 30, min_comments, effective_max, log)
             if not source_posts:
                 status.update(label="❌ No high-signal data found", state="error")
                 st.stop()
@@ -534,9 +584,9 @@ def main():
             comp_posts = None
             if competitor:
                 log(f"📡 Scanning r/{competitor}...")
-                comp_posts = fetcher.fetch_high_signal_posts(competitor, days_back, min_comments, max_posts, log)
+                comp_posts = fetcher.fetch_high_signal_posts(competitor, 30, min_comments, effective_max, log)
             
-            dashboard = engine.analyze(source_posts, source, comp_posts, competitor, days_back, log)
+            dashboard = engine.analyze(source_posts, source, comp_posts, competitor, 30, log)
             
             if not dashboard:
                 status.update(label="❌ Analysis failed", state="error")
@@ -544,6 +594,10 @@ def main():
             
             st.session_state['dashboard'] = dashboard
             st.session_state['post_count'] = len(source_posts)
+            st.session_state['source_name'] = source
+            st.session_state['source_posts'] = source_posts
+            st.session_state['comp_posts'] = comp_posts
+            st.session_state['comp_name'] = competitor
             
             status.update(label="✅ Strategy Analysis Complete!", state="complete")
         
@@ -551,6 +605,12 @@ def main():
     
     if 'dashboard' in st.session_state:
         render_results(st.session_state['dashboard'], st.session_state['post_count'])
+        render_raw_posts(
+            st.session_state.get('source_posts', []),
+            st.session_state.get('source_name', ''),
+            st.session_state.get('comp_posts'),
+            st.session_state.get('comp_name')
+        )
 
 if __name__ == "__main__":
     main()
