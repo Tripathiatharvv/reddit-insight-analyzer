@@ -1,1278 +1,556 @@
 """
-Reddit Product Insight Analyzer - Streamlit App
-A free, optimized tool for analyzing Reddit product discussions
+DeepSight Pro - Product Intelligence Platform
+Version: 8.0.0
 """
 
+import os
+import re
+import json
+from typing import List, Dict, Optional
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import requests
 import streamlit as st
-import time
-from datetime import datetime
 
-# Import modules
-from reddit_fetcher import RedditFetcher
-from text_processor import TextProcessor
-from nlp_analyzer import NLPAnalyzer
-from report_generator import ReportGenerator
-from ollama_insights import AIInsights
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
 
+GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_DAYS_BACK = 30
+DEFAULT_MIN_COMMENTS = 5
 
-# ============================================================================
-# PAGE CONFIGURATION
-# ============================================================================
-st.set_page_config(
-    page_title="Reddit Product Insight Analyzer",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+@dataclass
+class Evidence:
+    direct_quote: str
+    user: str
+    source_url: str
 
-# ============================================================================
-# SEO META TAGS FOR SOCIAL PREVIEWS
-# ============================================================================
-st.markdown("""
-<meta name="description" content="Transform Reddit discussions into actionable product insights using AI-powered sentiment analysis.">
-<meta property="og:title" content="Reddit Product Insight Analyzer">
-<meta property="og:description" content="AI-powered tool to analyze Reddit discussions and extract product insights, sentiment trends, and actionable recommendations.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://reddit-insight-analyzer.streamlit.app">
-<meta property="og:image" content="https://raw.githubusercontent.com/Tripathiatharvv/reddit-insight-analyzer/main/preview.png">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Reddit Product Insight Analyzer">
-<meta name="twitter:description" content="AI-powered sentiment analysis for Reddit product discussions.">
-""", unsafe_allow_html=True)
+@dataclass
+class PMAnalysis:
+    user_pain: str
+    technical_hypothesis: str
+    strategic_recommendation: str
 
-# ============================================================================
-# CUSTOM CSS - AWWWARDS LEVEL DESIGN
-# ============================================================================
-st.markdown("""
-<style>
-    /* Import premium fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
-    
-    /* Root variables */
-    :root {
-        --bg-primary: #050510;
-        --bg-secondary: #0a0a1a;
-        --accent-1: #6366f1;
-        --accent-2: #8b5cf6;
-        --accent-3: #a855f7;
-        --success: #22c55e;
-        --warning: #f59e0b;
-        --error: #ef4444;
-        --text-primary: #f8fafc;
-        --text-secondary: #94a3b8;
-        --text-muted: #64748b;
-        --glass-bg: rgba(255, 255, 255, 0.03);
-        --glass-border: rgba(255, 255, 255, 0.08);
-        --glow: rgba(99, 102, 241, 0.4);
-    }
-    
-    /* Global styles */
-    .stApp {
-        background: var(--bg-primary);
-        background-image: 
-            radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99, 102, 241, 0.15), transparent),
-            radial-gradient(ellipse 60% 40% at 100% 100%, rgba(139, 92, 246, 0.1), transparent);
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    /* Hide Streamlit branding and sidebar */
-    #MainMenu, footer, header {visibility: hidden;}
-    .stDeployButton {display: none;}
-    [data-testid="stSidebar"] {display: none;}
-    [data-testid="collapsedControl"] {display: none;}
-    
-    /* Config Panel Styling */
-    .config-panel {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        border-radius: 20px;
-        padding: 2rem;
-        margin: 1.5rem 0;
-    }
-    
-    .config-header {
-        text-align: center;
-        margin-bottom: 1.5rem;
-    }
-    
-    .config-title {
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-    }
-    
-    .config-subtitle {
-        font-size: 0.85rem;
-        color: var(--text-muted);
-    }
-    
-    .config-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 1rem;
-    }
-    
-    .config-item {
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 12px;
-        padding: 1rem;
-    }
-    
-    .config-label {
-        font-size: 0.7rem;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--text-muted);
-        margin-bottom: 0.5rem;
-    }
-    
-    /* Style Streamlit inputs */
-    .stTextInput > div > div {
-        background: var(--glass-bg) !important;
-        border: 1px solid var(--glass-border) !important;
-        border-radius: 10px !important;
-    }
-    
-    .stTextInput input {
-        color: var(--text-primary) !important;
-    }
-    
-    .stSelectbox > div > div {
-        background: var(--glass-bg) !important;
-        border: 1px solid var(--glass-border) !important;
-        border-radius: 10px !important;
-    }
-    
-    [data-testid="stSidebar"] .stMarkdown h2 {
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: var(--text-muted);
-        margin-bottom: 1rem;
-    }
-    
-    [data-testid="stSidebar"] .stMarkdown h3 {
-        font-size: 0.7rem;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--accent-1);
-        margin: 1.5rem 0 0.5rem 0;
-    }
-    
-    /* Premium header */
-    .hero-section {
-        text-align: center;
-        padding: 3rem 0 2rem 0;
-        position: relative;
-    }
-    
-    .main-title {
-        font-size: 3.5rem;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-        line-height: 1.1;
-        background: linear-gradient(135deg, #fff 0%, #e2e8f0 50%, #94a3b8 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.5rem;
-    }
-    
-    .main-title .accent {
-        background: linear-gradient(135deg, var(--accent-1) 0%, var(--accent-3) 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-    
-    .sub-title {
-        font-size: 1.125rem;
-        font-weight: 400;
-        color: var(--text-secondary);
-        letter-spacing: 0.01em;
-    }
-    
-    .divider {
-        width: 100%;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, var(--glass-border), transparent);
-        margin: 2rem 0;
-    }
-    
-    /* Glass cards */
-    .glass-card {
-        background: var(--glass-bg);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid var(--glass-border);
-        border-radius: 16px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    
-    .glass-card:hover {
-        border-color: rgba(99, 102, 241, 0.3);
-        box-shadow: 0 0 40px rgba(99, 102, 241, 0.1);
-    }
-    
-    /* Metric cards */
-    .metric-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1rem;
-        margin: 1.5rem 0;
-    }
-    
-    .metric-item {
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 12px;
-        padding: 1.25rem;
-        text-align: center;
-        transition: all 0.3s ease;
-    }
-    
-    .metric-item:hover {
-        transform: translateY(-2px);
-        border-color: var(--accent-1);
-    }
-    
-    .metric-label {
-        font-size: 0.7rem;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: var(--text-muted);
-        margin-bottom: 0.5rem;
-    }
-    
-    .metric-value {
-        font-size: 1.5rem;
-        font-weight: 700;
-        color: var(--text-primary);
-        font-family: 'JetBrains Mono', monospace;
-    }
-    
-    /* Section headers */
-    .section-header {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin: 2.5rem 0 1.5rem 0;
-    }
-    
-    .section-icon {
-        width: 32px;
-        height: 32px;
-        background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1rem;
-    }
-    
-    .section-title {
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--text-primary);
-        letter-spacing: -0.02em;
-    }
-    
-    /* Sentiment visualization */
-    .sentiment-bar-container {
-        background: rgba(0, 0, 0, 0.3);
-        border-radius: 12px;
-        padding: 3px;
-        margin: 1rem 0;
-    }
-    
-    .sentiment-bar-inner {
-        display: flex;
-        height: 40px;
-        border-radius: 10px;
-        overflow: hidden;
-    }
-    
-    .sentiment-segment {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: white;
-        transition: all 0.3s ease;
-    }
-    
-    .sentiment-segment.positive {
-        background: linear-gradient(135deg, #22c55e, #16a34a);
-    }
-    
-    .sentiment-segment.neutral {
-        background: linear-gradient(135deg, #64748b, #475569);
-    }
-    
-    .sentiment-segment.negative {
-        background: linear-gradient(135deg, #ef4444, #dc2626);
-    }
-    
-    .sentiment-legend {
-        display: flex;
-        justify-content: center;
-        gap: 2rem;
-        margin-top: 1rem;
-    }
-    
-    .legend-item {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: 0.8rem;
-        color: var(--text-secondary);
-    }
-    
-    .legend-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-    }
-    
-    .legend-dot.positive { background: #22c55e; }
-    .legend-dot.neutral { background: #64748b; }
-    .legend-dot.negative { background: #ef4444; }
-    
-    /* Theme cards */
-    .theme-card {
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 12px;
-        padding: 1.25rem;
-        margin: 0.75rem 0;
-        transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .theme-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 3px;
-        height: 100%;
-        background: var(--accent-1);
-    }
-    
-    .theme-card.negative::before { background: var(--error); }
-    .theme-card.positive::before { background: var(--success); }
-    .theme-card.mixed::before { background: var(--warning); }
-    
-    .theme-card:hover {
-        transform: translateX(4px);
-        border-color: rgba(99, 102, 241, 0.3);
-    }
-    
-    .theme-name {
-        font-size: 1rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-bottom: 0.5rem;
-    }
-    
-    .theme-desc {
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-        line-height: 1.5;
-    }
-    
-    .theme-count {
-        display: inline-block;
-        background: rgba(99, 102, 241, 0.2);
-        color: var(--accent-1);
-        font-size: 0.7rem;
-        font-weight: 600;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        margin-top: 0.75rem;
-    }
-    
-    /* Impact cards */
-    .impact-card {
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 12px;
-        padding: 1.25rem;
-        margin: 0.75rem 0;
-        position: relative;
-        transition: all 0.3s ease;
-    }
-    
-    .impact-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 2px;
-        background: linear-gradient(90deg, var(--accent-1), var(--accent-3));
-    }
-    
-    .impact-card.negative::before { background: linear-gradient(90deg, #ef4444, #f87171); }
-    .impact-card.positive::before { background: linear-gradient(90deg, #22c55e, #4ade80); }
-    
-    .impact-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    }
-    
-    .impact-title {
-        font-size: 0.95rem;
-        font-weight: 500;
-        color: var(--text-primary);
-        line-height: 1.4;
-        margin-bottom: 0.75rem;
-    }
-    
-    .impact-meta {
-        display: flex;
-        gap: 1rem;
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        font-family: 'JetBrains Mono', monospace;
-    }
-    
-    /* Action items */
-    .action-card {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.05) 100%);
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        border-radius: 12px;
-        padding: 1.25rem;
-        margin: 0.75rem 0;
-        position: relative;
-        padding-left: 3rem;
-    }
-    
-    .action-number {
-        position: absolute;
-        left: 1rem;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 24px;
-        height: 24px;
-        background: var(--accent-1);
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.75rem;
-        font-weight: 700;
-        color: white;
-    }
-    
-    .action-text {
-        font-size: 0.9rem;
-        color: var(--text-primary);
-        line-height: 1.5;
-    }
-    
-    /* Summary box */
-    .summary-box {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
-        border: 1px solid rgba(99, 102, 241, 0.15);
-        border-radius: 16px;
-        padding: 1.75rem;
-        font-size: 1rem;
-        line-height: 1.7;
-        color: var(--text-secondary);
-    }
-    
-    /* Insights grid */
-    .insights-grid {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 1.5rem;
-        margin: 1rem 0;
-    }
-    
-    .insight-column h4 {
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: var(--text-muted);
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .insight-item {
-        background: var(--glass-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 8px;
-        padding: 0.875rem 1rem;
-        margin: 0.5rem 0;
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-        transition: all 0.2s ease;
-    }
-    
-    .insight-item:hover {
-        border-color: rgba(255, 255, 255, 0.15);
-    }
-    
-    .insight-item.positive { border-left: 3px solid var(--success); }
-    .insight-item.negative { border-left: 3px solid var(--error); }
-    .insight-item.improving { border-left: 3px solid #22c55e; }
-    .insight-item.worsening { border-left: 3px solid #f59e0b; }
-    
-    /* AI badge */
-    .ai-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.1));
-        border: 1px solid rgba(99, 102, 241, 0.3);
-        border-radius: 100px;
-        padding: 0.5rem 1rem;
-        font-size: 0.8rem;
-        font-weight: 500;
-        color: var(--accent-1);
-        margin: 1.5rem 0;
-    }
-    
-    /* Empty state */
-    .empty-state {
-        text-align: center;
-        padding: 6rem 2rem;
-        color: var(--text-muted);
-    }
-    
-    .empty-state h2 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        margin-bottom: 0.75rem;
-    }
-    
-    .empty-state p {
-        font-size: 1rem;
-        max-width: 400px;
-        margin: 0 auto;
-        line-height: 1.6;
-    }
-    
-    /* Buttons */
-    .stButton>button {
-        background: linear-gradient(135deg, var(--accent-1), var(--accent-2)) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 10px !important;
-        padding: 0.75rem 1.5rem !important;
-        font-weight: 600 !important;
-        font-size: 0.9rem !important;
-        letter-spacing: 0.02em !important;
-        transition: all 0.3s ease !important;
-        box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3) !important;
-    }
-    
-    .stButton>button:hover {
-        transform: translateY(-2px) !important;
-        box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4) !important;
-    }
-    
-    /* Sliders */
-    .stSlider > div > div > div {
-        background: var(--accent-1) !important;
-    }
-    
-    /* Footer */
-    .footer {
-        text-align: center;
-        padding: 3rem 0;
-        margin-top: 4rem;
-        border-top: 1px solid var(--glass-border);
-    }
-    
-    .footer-text {
-        font-size: 0.8rem;
-        color: var(--text-muted);
-    }
-    
-    .footer-accent {
-        color: var(--accent-1);
-    }
-    
-    /* ============================================
-       MOBILE RESPONSIVE STYLES
-       ============================================ */
-    
-    /* Tablet (768px and below) */
-    @media screen and (max-width: 768px) {
-        .main-title {
-            font-size: 2.5rem;
-        }
-        
-        .sub-title {
-            font-size: 1rem;
-        }
-        
-        .metric-grid {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0.75rem;
-        }
-        
-        .metric-item {
-            padding: 1rem;
-        }
-        
-        .metric-value {
-            font-size: 1.25rem;
-        }
-        
-        .insights-grid {
-            grid-template-columns: 1fr;
-            gap: 1rem;
-        }
-        
-        .section-header {
-            margin: 2rem 0 1rem 0;
-        }
-        
-        .section-title {
-            font-size: 1.1rem;
-        }
-        
-        .summary-box {
-            padding: 1.25rem;
-            font-size: 0.95rem;
-        }
-        
-        .sentiment-legend {
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-        
-        .hero-section {
-            padding: 2rem 0 1.5rem 0;
-        }
-    }
-    
-    /* Mobile (480px and below) */
-    @media screen and (max-width: 480px) {
-        .main-title {
-            font-size: 1.75rem;
-            letter-spacing: -0.02em;
-        }
-        
-        .sub-title {
-            font-size: 0.875rem;
-            padding: 0 0.5rem;
-        }
-        
-        .metric-grid {
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-        }
-        
-        .metric-item {
-            padding: 0.875rem;
-        }
-        
-        .metric-label {
-            font-size: 0.6rem;
-        }
-        
-        .metric-value {
-            font-size: 1rem;
-        }
-        
-        .section-header {
-            margin: 1.5rem 0 1rem 0;
-            gap: 0.5rem;
-        }
-        
-        .section-icon {
-            width: 28px;
-            height: 28px;
-            font-size: 0.875rem;
-        }
-        
-        .section-title {
-            font-size: 1rem;
-        }
-        
-        .summary-box {
-            padding: 1rem;
-            font-size: 0.9rem;
-            line-height: 1.6;
-            border-radius: 12px;
-        }
-        
-        .sentiment-bar-inner {
-            height: 36px;
-        }
-        
-        .sentiment-segment {
-            font-size: 0.7rem;
-        }
-        
-        .sentiment-legend {
-            gap: 0.75rem;
-        }
-        
-        .legend-item {
-            font-size: 0.7rem;
-        }
-        
-        .theme-card {
-            padding: 1rem;
-        }
-        
-        .theme-name {
-            font-size: 0.9rem;
-        }
-        
-        .theme-desc {
-            font-size: 0.8rem;
-        }
-        
-        .theme-count {
-            font-size: 0.65rem;
-        }
-        
-        .insight-column h4 {
-            font-size: 0.7rem;
-        }
-        
-        .insight-item {
-            padding: 0.75rem;
-            font-size: 0.8rem;
-        }
-        
-        .impact-card {
-            padding: 1rem;
-        }
-        
-        .impact-title {
-            font-size: 0.85rem;
-        }
-        
-        .impact-meta {
-            font-size: 0.65rem;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        
-        .action-card {
-            padding: 1rem;
-            padding-left: 2.5rem;
-        }
-        
-        .action-number {
-            width: 20px;
-            height: 20px;
-            font-size: 0.65rem;
-            left: 0.75rem;
-        }
-        
-        .action-text {
-            font-size: 0.85rem;
-        }
-        
-        .ai-badge {
-            font-size: 0.7rem;
-            padding: 0.4rem 0.8rem;
-        }
-        
-        .empty-state {
-            padding: 3rem 1rem;
-        }
-        
-        .empty-state h2 {
-            font-size: 1.25rem;
-        }
-        
-        .empty-state p {
-            font-size: 0.875rem;
-        }
-        
-        .footer {
-            padding: 2rem 0;
-            margin-top: 2rem;
-        }
-        
-        .footer-text {
-            font-size: 0.7rem;
-        }
-        
-        .divider {
-            margin: 1.5rem 0;
-        }
-        
-        .hero-section {
-            padding: 1.5rem 0 1rem 0;
-        }
-        
-        /* Touch-friendly button sizing */
-        .stButton>button {
-            padding: 0.875rem 1.25rem !important;
-            font-size: 0.85rem !important;
-            min-height: 48px !important;
-        }
-    }
-    
-    /* Small mobile (360px and below) */
-    @media screen and (max-width: 360px) {
-        .main-title {
-            font-size: 1.5rem;
-        }
-        
-        .metric-grid {
-            grid-template-columns: 1fr;
-        }
-        
-        .sentiment-legend {
-            flex-direction: column;
-            align-items: center;
-            gap: 0.5rem;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
+@dataclass
+class StatusBadge:
+    severity: str
+    frequency_label: str
 
+@dataclass
+class ProductTicket:
+    ticket_id: str
+    title: str
+    category: str
+    status_badge: StatusBadge
+    pm_analysis: PMAnalysis
+    evidence: Evidence
 
-# ============================================================================
-# MAIN CONTENT
-# ============================================================================
+@dataclass
+class DifferentiationItem:
+    feature: str
+    winner: str
+    insight: str
+    evidence_quote: str
 
-# Hero Header
-st.markdown('''
-<div class="hero-section">
-    <h1 class="main-title">
-        Reddit <span class="accent">Insight</span> Analyzer
-    </h1>
-    <p class="sub-title">Transform community discussions into actionable product intelligence</p>
-</div>
-''', unsafe_allow_html=True)
+@dataclass
+class CompetitorIntelligence:
+    active: bool
+    differentiation_matrix: List[DifferentiationItem]
 
-# Initialize AI to check provider
-ai_insights = AIInsights()
-provider_icon = "☁️" if ai_insights.provider == "groq" else "💻"
-provider_name = "Groq Cloud (Free)" if ai_insights.provider == "groq" else "Local Ollama"
-provider_color = "#f59e0b" if ai_insights.provider == "groq" else "#22c55e" # Orange for Cloud, Green for Local
+@dataclass
+class DashboardMeta:
+    analysis_period: str
+    battleground_detected: str
+    compatibility_warning: Optional[str]
 
-# Configuration Panel (embedded in main page)
-st.markdown(f'''
-<div class="config-panel">
-    <div class="config-header">
-        <div class="config-title">⚙️ Analysis Configuration</div>
-        <div class="config-subtitle">Configure your analysis parameters below</div>
-        <div style="margin-top: 0.5rem; font-size: 0.8rem; color: {provider_color}; background: rgba(255,255,255,0.05); padding: 4px 12px; border-radius: 20px; display: inline-block;">
-            {provider_icon} AI Provider: <strong>{provider_name}</strong>
-        </div>
-    </div>
-</div>
-''', unsafe_allow_html=True)
+@dataclass
+class StrategyDashboard:
+    dashboard_meta: DashboardMeta
+    product_tickets: List[ProductTicket]
+    competitor_intelligence: Optional[CompetitorIntelligence]
 
-# Config inputs using columns
-col1, col2, col3 = st.columns(3)
+@dataclass
+class CleanPost:
+    id: str
+    text: str
+    url: str
+    author: str
+    comments: int
+    date: str
 
-with col1:
-    subreddit = st.text_input(
-        "🎯 Subreddit",
-        value="apple",
-        placeholder="e.g., apple, iphone, Android",
-        help="Enter subreddit name without r/"
-    )
+STRATEGY_PROMPT = '''You are the **Head of Product Strategy** for a major technology firm. You are analyzing raw user feedback to create a **Engineering & Strategy Dashboard**.
+
+**YOUR GOAL:**
+Process the provided clusters of user feedback and output a list of distinct, actionable Product Tickets.
+
+**INPUT DATA CONTEXT:**
+- You will receive a list of "Clusters" (groups of similar posts).
+- Each cluster contains: `cluster_size` (Frequency), `sample_posts` (Evidence).
+- `source_brand`: The main brand being analyzed.
+- `competitor_brand`: The brand for comparison.
+
+---
+
+### STEP 1: NICHE & CONTEXT REASONING ("The Smart Filter")
+Before analyzing, determine the **Shared Battleground**.
+- IF Source="Samsung" and Competitor="Apple":
+  - Battleground = **"Premium Smartphones & Ecosystem"**.
+  - Action: IGNORE complaints about Samsung Fridges or Apple TV unless they relate to the phone ecosystem.
+  - Action: COMPARE only overlapping features (Camera, Battery, UI, Support).
+- IF no overlap exists (e.g. Education vs Tech), mark as "Niche Mismatch" and skip comparison.
+
+### STEP 2: CLUSTER-TO-TICKET CONVERSION
+**CRITICAL INSTRUCTION:** Do not summarize multiple issues into one. If users report "Camera Crash" and "Camera Lens Flare", these are **TWO** separate tickets.
+
+For **EVERY** cluster provided:
+1.  **Validate:** Is this a genuine product issue/feature request? (Ignore "Shipping delays" or "Fanboy wars").
+2.  **Triangulate Root Cause:**
+    - *Symptom:* "FaceID fails in dark."
+    - *Inference:* "IR Sensor sensitivity calibration issue."
+3.  **Assign Severity:**
+    - **P0 (Critical):** Data loss, Security, App Crash, inability to use core feature.
+    - **P1 (High):** Major broken feature, significant friction.
+    - **P2 (Medium):** UI annoyance, minor bug.
+4.  **Extract Evidence:** You **MUST** find the exact quote and URL from the provided samples.
+
+---
+
+### STEP 3: OUTPUT JSON SCHEMA
+
+Output ONLY valid JSON. No markdown, no explanation.
+
+{
+  "dashboard_meta": {
+    "analysis_period": "Last 30 Days",
+    "battleground_detected": "String (e.g. 'Flagship Mobile Computing')",
+    "compatibility_warning": "String (or null)"
+  },
+  "product_tickets": [
+    {
+      "ticket_id": "TKT-101",
+      "title": "String (Engineering style, e.g., 'Optimization failure in 120Hz Refresh Rate')",
+      "category": "Bug | Feature Gap | UX Debt | Performance",
+      "status_badge": {
+        "severity": "P0 | P1 | P2",
+        "frequency_label": "String (e.g. '🔥 Impacting 140+ Users')"
+      },
+      "pm_analysis": {
+        "user_pain": "String (The human experience)",
+        "technical_hypothesis": "String (The engineering reason)",
+        "strategic_recommendation": "String (Specific action, e.g. 'Rollback Driver v2.4')"
+      },
+      "evidence": {
+        "direct_quote": "String (Verbatim text)",
+        "user": "String",
+        "source_url": "String (Must match input URL exactly)"
+      }
+    }
+  ],
+  "competitor_intelligence": {
+    "active": true,
+    "differentiation_matrix": [
+      {
+        "feature": "String (e.g. 'Battery Management')",
+        "winner": "Source | Competitor",
+        "insight": "String (e.g. 'Competitor users praise standby time; Source users report 10% drain overnight.')",
+        "evidence_quote": "String"
+      }
+    ]
+  }
+}
+'''
+
+class HighSignalFetcher:
+    PULLPUSH_URL = "https://api.pullpush.io/reddit/search/submission/"
+    HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+    }
     
-    use_ml = st.checkbox(
-        "🧠 ML Sentiment",
-        value=True,
-        help="VADER + TextBlob for better sentiment accuracy"
-    )
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(self.HEADERS)
 
-with col2:
-    post_limit = st.slider(
-        "📊 Posts to Analyze",
-        min_value=5,
-        max_value=100,
-        value=25,
-        step=5,
-        help="More posts = more comprehensive analysis"
-    )
+    def fetch_high_signal_posts(self, subreddit: str, days_back: int = DEFAULT_DAYS_BACK,
+                                 min_comments: int = DEFAULT_MIN_COMMENTS, max_posts: int = 50,
+                                 progress_callback=None) -> List[CleanPost]:
+        try:
+            if progress_callback:
+                progress_callback(f"📡 Connecting to PullPush for r/{subreddit}...")
+            
+            params = {"subreddit": subreddit, "sort": "desc", "sort_type": "score", "size": 500}
+            response = self.session.get(self.PULLPUSH_URL, params=params, timeout=15)
+            
+            if response.status_code != 200:
+                if progress_callback:
+                    progress_callback(f"❌ API Error: {response.status_code}")
+                return []
+            
+            raw_data = response.json().get('data', [])
+            if not raw_data:
+                if progress_callback:
+                    progress_callback("❌ No data from API")
+                return []
+            
+            if progress_callback:
+                progress_callback(f"📥 Downloaded {len(raw_data)} posts")
+            
+            clean_data = []
+            for post in raw_data:
+                comment_count = post.get('num_comments', 0)
+                if comment_count < min_comments:
+                    continue
+                
+                body = post.get('selftext', '') or ''
+                title = post.get('title', '') or ''
+                
+                if body in ["[removed]", "[deleted]"]:
+                    continue
+                if (len(body) + len(title)) < 15:
+                    continue
+                
+                post_id = post.get('id', '')
+                full_link = post.get('full_link') or f"https://reddit.com/r/{subreddit}/comments/{post_id}"
+                
+                clean_data.append(CleanPost(
+                    id=post_id,
+                    text=f"TITLE: {title}\nBODY: {body}",
+                    url=full_link,
+                    author=f"u/{post.get('author', 'unknown')}",
+                    comments=comment_count,
+                    date=datetime.utcfromtimestamp(post.get('created_utc', 0)).strftime('%Y-%m-%d')
+                ))
+                
+                if len(clean_data) >= max_posts:
+                    break
+            
+            if progress_callback:
+                if clean_data:
+                    progress_callback(f"🛡️ Filtered to {len(clean_data)} High-Signal Posts")
+                else:
+                    progress_callback(f"⚠️ Found {len(raw_data)} posts, but 0 passed filters")
+            
+            return clean_data
+            
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"❌ Error: {e}")
+            return []
+
+class StrategyIntelligenceEngine:
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.environ.get("GROQ_API_KEY")
+        self.client = Groq(api_key=self.api_key) if GROQ_AVAILABLE and self.api_key else None
     
-    use_ai = st.checkbox(
-        "🤖 AI Deep Insights",
-        value=True,
-        help=f"Use {provider_name} for AI-generated insights"
-    )
-
-with col3:
-    comments_per_post = st.slider(
-        "💬 Comments per Post",
-        min_value=0,
-        max_value=50,
-        value=10,
-        step=5,
-        help="0 = no comments"
-    )
+    def is_available(self) -> bool:
+        return self.client is not None
     
-    analysis_mode = st.selectbox(
-        "📈 Analysis Mode",
-        options=[
-            "summary + sentiment + themes",
-            "summary + sentiment",
-            "summary_only"
-        ],
-        index=0
-    )
-
-# Analyze button
-st.markdown("<br>", unsafe_allow_html=True)
-col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-with col_btn2:
-    analyze_button = st.button(
-        "🚀 Analyze Subreddit",
-        type="primary",
-        use_container_width=True
-    )
-
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-
-# ============================================================================
-# ANALYSIS LOGIC
-# ============================================================================
-
-@st.cache_resource
-def get_analyzer(use_ml: bool):
-    """Cache the NLP analyzer so ML models are loaded only once"""
-    return NLPAnalyzer(use_ml_models=use_ml)
-
-
-@st.cache_resource
-def get_report_generator(use_ai: bool):
-    """Cache the report generator with AI settings"""
-    return ReportGenerator(use_ai=use_ai)
-
-
-def run_analysis(subreddit: str, post_limit: int, comments_per_post: int, mode: str, use_ml: bool, use_ai: bool):
-    """Run the full analysis pipeline with optional AI enhancement and comment fetching"""
+    def prepare_clusters(self, posts: List[CleanPost]) -> List[Dict]:
+        clusters = []
+        for i, post in enumerate(posts):
+            clusters.append({
+                "cluster_id": i + 1,
+                "cluster_size": post.comments,
+                "sample_posts": [{"text": post.text, "user": post.author, "url": post.url, "date": post.date, "comments": post.comments}]
+            })
+        return clusters
     
-    start_time = time.time()
-    
-    # Initialize components (analyzer is cached if using ML)
-    fetcher = RedditFetcher()
-    processor = TextProcessor()
-    analyzer = get_analyzer(use_ml)
-    report_gen = get_report_generator(use_ai)
-    
-    # Progress tracking
-    progress = st.progress(0, text="Initializing...")
-    
-    try:
-        # Step 1: Fetch posts (with comments if requested)
-        if comments_per_post > 0:
-            progress.progress(10, text=f"📡 Fetching Reddit posts and {comments_per_post} comments each...")
-        else:
-            progress.progress(10, text="📡 Fetching Reddit posts...")
-        raw_posts = fetcher.fetch_posts(subreddit, post_limit, comments_per_post=comments_per_post)
+    def analyze(self, source_posts: List[CleanPost], source_name: str, 
+                competitor_posts: List[CleanPost] = None, competitor_name: str = None,
+                days_back: int = DEFAULT_DAYS_BACK, progress_callback=None) -> Optional[StrategyDashboard]:
         
-        # Step 2: Process text (including comments)
-        progress.progress(30, text="🧹 Processing text and comments...")
-        processed_posts = processor.process_posts(raw_posts)
-        
-        if not processed_posts:
-            st.error("No valid posts found after processing.")
+        if not self.is_available():
             return None
         
-        # Step 3: Analyze sentiment
-        progress.progress(50, text="🔍 Analyzing sentiment...")
-        analyzed_posts = analyzer.analyze_posts(processed_posts)
+        if progress_callback:
+            progress_callback("🧠 Building strategy payload...")
         
-        # Calculate sentiment distribution
-        sentiment_dist = analyzer.calculate_sentiment_distribution(analyzed_posts)
+        source_clusters = self.prepare_clusters(source_posts)
+        input_payload = {
+            "source_brand": source_name,
+            "competitor_brand": competitor_name,
+            "analysis_period": f"Last {days_back} Days",
+            "clusters": source_clusters
+        }
         
-        # Step 4: Extract themes (if mode requires)
-        progress.progress(70, text="🏷️ Extracting themes...")
-        themes = []
-        if "themes" in mode:
-            themes = analyzer.extract_themes(analyzed_posts)
+        if competitor_posts:
+            input_payload["competitor_clusters"] = self.prepare_clusters(competitor_posts)
         
-        # Step 5: Get high-impact issues
-        progress.progress(85, text="⚡ Identifying high-impact issues...")
-        high_impact = analyzer.get_high_impact_issues(analyzed_posts)
+        if progress_callback:
+            progress_callback(f"📦 Sending {len(source_clusters)} clusters to Strategy AI...")
         
-        # Step 6: Generate report (with AI if enabled)
-        if use_ai:
-            progress.progress(90, text="🤖 Generating AI insights...")
+        try:
+            completion = self.client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": STRATEGY_PROMPT},
+                    {"role": "user", "content": json.dumps(input_payload)}
+                ],
+                temperature=0.2,
+                max_tokens=8000
+            )
+            return self._parse(completion.choices[0].message.content)
+        except Exception as e:
+            st.error(f"❌ AI error: {e}")
+            return None
+    
+    def _parse(self, response: str) -> Optional[StrategyDashboard]:
+        try:
+            match = re.search(r'\{[\s\S]*\}', response)
+            if not match:
+                return None
+            data = json.loads(match.group())
+            
+            dm = data.get('dashboard_meta', {})
+            meta = DashboardMeta(
+                analysis_period=dm.get('analysis_period', 'Last 30 Days'),
+                battleground_detected=dm.get('battleground_detected', ''),
+                compatibility_warning=dm.get('compatibility_warning')
+            )
+            
+            tickets = []
+            for item in data.get('product_tickets', []):
+                sb = item.get('status_badge', {})
+                pm = item.get('pm_analysis', {})
+                ev = item.get('evidence', {})
+                
+                tickets.append(ProductTicket(
+                    ticket_id=item.get('ticket_id', ''),
+                    title=item.get('title', ''),
+                    category=item.get('category', 'Bug'),
+                    status_badge=StatusBadge(severity=sb.get('severity', 'P2'), frequency_label=sb.get('frequency_label', '')),
+                    pm_analysis=PMAnalysis(user_pain=pm.get('user_pain', ''), technical_hypothesis=pm.get('technical_hypothesis', ''), strategic_recommendation=pm.get('strategic_recommendation', '')),
+                    evidence=Evidence(direct_quote=ev.get('direct_quote', ''), user=ev.get('user', 'Anonymous'), source_url=ev.get('source_url', ''))
+                ))
+            
+            comp = None
+            ci = data.get('competitor_intelligence', {})
+            if ci.get('active'):
+                matrix = [DifferentiationItem(feature=item.get('feature', ''), winner=item.get('winner', ''), insight=item.get('insight', ''), evidence_quote=item.get('evidence_quote', '')) for item in ci.get('differentiation_matrix', [])]
+                comp = CompetitorIntelligence(active=True, differentiation_matrix=matrix)
+            
+            return StrategyDashboard(dashboard_meta=meta, product_tickets=tickets, competitor_intelligence=comp)
+        except Exception as e:
+            st.error(f"Parse error: {e}")
+            return None
+
+def setup_page():
+    st.set_page_config(page_title="DeepSight Pro | Strategy Dashboard", page_icon="🔬", layout="wide")
+
+def get_api_key():
+    try:
+        return st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+    except:
+        return os.environ.get("GROQ_API_KEY")
+
+def get_severity_display(severity: str):
+    s = severity.upper()
+    if "P0" in s:
+        return "🔴 P0 (Critical)", "error"
+    elif "P1" in s:
+        return "🟠 P1 (High)", "warning"
+    return "🟡 P2 (Medium)", "info"
+
+def render_sidebar():
+    with st.sidebar:
+        st.title("🔬 DeepSight Pro")
+        st.caption("v8.0 • Strategy Dashboard")
+        st.divider()
+        
+        if get_api_key():
+            st.success("🔑 API Active")
         else:
-            progress.progress(95, text="📝 Generating report...")
+            st.error("🔑 API Missing")
         
-        end_time = time.time()
-        processing_time = (end_time - start_time) * 1000
+        st.divider()
         
-        report = report_gen.generate_full_report(
-            subreddit=subreddit,
-            analyzed_posts=analyzed_posts,
-            themes=themes,
-            sentiment_dist=sentiment_dist,
-            high_impact=high_impact,
-            analysis_mode=mode,
-            processing_time_ms=processing_time
-        )
+        st.subheader("🎯 Primary Brand")
+        source = st.text_input("Subreddit", value="iphone", label_visibility="collapsed")
         
-        progress.progress(100, text="✅ Analysis complete!")
-        time.sleep(0.5)
-        progress.empty()
+        st.subheader("⚔️ Competitor")
+        competitor = st.text_input("Competitor", value="", placeholder="e.g., samsung", label_visibility="collapsed")
+        enable_comp = st.checkbox("Enable Comparison", value=bool(competitor))
         
-        return report
+        st.subheader("⏰ Time Range")
+        days_back = st.slider("Days to analyze", 7, 90, 30, 7)
         
-    except ValueError as e:
-        progress.empty()
-        st.error(f"❌ {str(e)}")
-        return None
-    except ConnectionError as e:
-        progress.empty()
-        st.error(f"🌐 {str(e)}")
-        return None
-    except Exception as e:
-        progress.empty()
-        st.error(f"⚠️ Unexpected error: {str(e)}")
-        return None
+        st.subheader("💬 Engagement Filter")
+        min_comments = st.slider("Min comments", 1, 20, 5, 1)
+        
+        st.subheader("📊 Depth")
+        max_posts = st.slider("Max posts", 10, 100, 30, 10)
+        
+        return source, competitor if enable_comp else "", days_back, min_comments, max_posts
 
+def render_header():
+    st.title("🔬 DeepSight Pro")
+    st.caption("Strategy Dashboard • High-Signal Analysis • Differentiation Matrix")
+    st.divider()
 
-# ============================================================================
-# DISPLAY RESULTS
-# ============================================================================
-def display_report(report):
-    """Display the analysis report with premium styling"""
+def render_metrics(dashboard: StrategyDashboard, post_count: int):
+    tickets = dashboard.product_tickets
+    p0 = sum(1 for t in tickets if 'P0' in t.status_badge.severity.upper())
+    p1 = sum(1 for t in tickets if 'P1' in t.status_badge.severity.upper())
+    bugs = sum(1 for t in tickets if 'bug' in t.category.lower())
     
-    # Metric Grid
-    st.markdown(f'''
-    <div class="metric-grid">
-        <div class="metric-item">
-            <div class="metric-label">Subreddit</div>
-            <div class="metric-value">r/{report.subreddit}</div>
-        </div>
-        <div class="metric-item">
-            <div class="metric-label">Posts Analyzed</div>
-            <div class="metric-value">{report.posts_analyzed}</div>
-        </div>
-        <div class="metric-item">
-            <div class="metric-label">Processing Time</div>
-            <div class="metric-value">{report.processing_time_ms:.0f}ms</div>
-        </div>
-        <div class="metric-item">
-            <div class="metric-label">Analysis Date</div>
-            <div class="metric-value">{report.timestamp[:10]}</div>
-        </div>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    # Executive Summary
-    st.markdown('''
-    <div class="section-header">
-        <div class="section-icon">📝</div>
-        <div class="section-title">Executive Summary</div>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    st.markdown(f'''
-    <div class="summary-box">
-        {report.executive_summary}
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    # Sentiment Section
-    if report.sentiment_distribution:
-        st.markdown('''
-        <div class="section-header">
-            <div class="section-icon">📊</div>
-            <div class="section-title">Sentiment Analysis</div>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        pos = report.sentiment_distribution['positive']
-        neu = report.sentiment_distribution['neutral']
-        neg = report.sentiment_distribution['negative']
-        
-        st.markdown(f'''
-        <div class="sentiment-bar-container">
-            <div class="sentiment-bar-inner">
-                <div class="sentiment-segment positive" style="width: {pos}%">{pos:.0f}%</div>
-                <div class="sentiment-segment neutral" style="width: {neu}%">{neu:.0f}%</div>
-                <div class="sentiment-segment negative" style="width: {neg}%">{neg:.0f}%</div>
-            </div>
-        </div>
-        <div class="sentiment-legend">
-            <div class="legend-item"><div class="legend-dot positive"></div>Positive</div>
-            <div class="legend-item"><div class="legend-dot neutral"></div>Neutral</div>
-            <div class="legend-item"><div class="legend-dot negative"></div>Negative</div>
-        </div>
-        ''', unsafe_allow_html=True)
-    
-    # Themes Section
-    if report.themes:
-        st.markdown('''
-        <div class="section-header">
-            <div class="section-icon">🏷️</div>
-            <div class="section-title">Key Themes</div>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        cols = st.columns(2)
-        for i, theme in enumerate(report.themes):
-            with cols[i % 2]:
-                mood_class = theme.get('mood', 'neutral')
-                st.markdown(f'''
-                <div class="theme-card {mood_class}">
-                    <div class="theme-name">{theme['name']}</div>
-                    <div class="theme-desc">{theme['explanation']}</div>
-                    <div class="theme-count">{theme['count']} mentions</div>
-                </div>
-                ''', unsafe_allow_html=True)
-    
-    # Product Insights
-    st.markdown('''
-    <div class="section-header">
-        <div class="section-icon">💡</div>
-        <div class="section-title">Product Insights</div>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    st.markdown('''<div class="insights-grid">''', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown('''<div class="insight-column"><h4>✅ What Users Like</h4></div>''', unsafe_allow_html=True)
-        for item in report.product_insights['likes']:
-            st.markdown(f'''<div class="insight-item positive">{item}</div>''', unsafe_allow_html=True)
-        
-        st.markdown('''<div class="insight-column" style="margin-top: 1.5rem;"><h4>📈 Improving</h4></div>''', unsafe_allow_html=True)
-        for item in report.product_insights['improving']:
-            st.markdown(f'''<div class="insight-item improving">↑ {item}</div>''', unsafe_allow_html=True)
-    
+        st.metric("📊 Posts Analyzed", post_count)
     with col2:
-        st.markdown('''<div class="insight-column"><h4>❌ What Frustrates Users</h4></div>''', unsafe_allow_html=True)
-        for item in report.product_insights['frustrations']:
-            st.markdown(f'''<div class="insight-item negative">{item}</div>''', unsafe_allow_html=True)
+        st.metric("🎫 Tickets Generated", len(tickets))
+    with col3:
+        st.metric("🚨 P0/P1 Issues", f"{p0 + p1}")
+    with col4:
+        st.metric("🐛 Bugs", bugs)
+
+def render_ticket(ticket: ProductTicket):
+    severity_text, severity_type = get_severity_display(ticket.status_badge.severity)
+    
+    with st.container(border=True):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader(f"🎫 {ticket.ticket_id}: {ticket.title}")
+        with col2:
+            st.caption(f"**{ticket.category}**")
         
-        st.markdown('''<div class="insight-column" style="margin-top: 1.5rem;"><h4>📉 Worsening</h4></div>''', unsafe_allow_html=True)
-        for item in report.product_insights['worsening']:
-            st.markdown(f'''<div class="insight-item worsening">↓ {item}</div>''', unsafe_allow_html=True)
-    
-    st.markdown('''</div>''', unsafe_allow_html=True)
-    
-    # High Impact Issues
-    if report.high_impact_issues:
-        st.markdown('''
-        <div class="section-header">
-            <div class="section-icon">⚡</div>
-            <div class="section-title">High-Impact Issues</div>
-        </div>
-        ''', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            if severity_type == "error":
+                st.error(severity_text)
+            elif severity_type == "warning":
+                st.warning(severity_text)
+            else:
+                st.info(severity_text)
+        with col2:
+            st.info(ticket.status_badge.frequency_label)
         
-        for i, issue in enumerate(report.high_impact_issues, 1):
-            st.markdown(f'''
-            <div class="impact-card {issue['sentiment']}">
-                <div class="impact-title"><strong>#{i}</strong> — {issue['title']}</div>
-                <div class="impact-meta">
-                    <span>Score: {issue['score']}</span>
-                    <span>Comments: {issue['comments']}</span>
-                    <span>Impact: {issue['impact_score']}</span>
-                </div>
-            </div>
-            ''', unsafe_allow_html=True)
-    
-    # AI-Generated Action Items
-    if report.ai_enhanced and report.action_items:
-        st.markdown('''
-        <div class="section-header">
-            <div class="section-icon">🎯</div>
-            <div class="section-title">AI-Generated Action Items</div>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.divider()
         
-        for i, action in enumerate(report.action_items, 1):
-            # Handle both dict and string action items
-            action_text = action.get('action', str(action)) if isinstance(action, dict) else str(action)
-            st.markdown(f'''
-            <div class="action-card">
-                <div class="action-number">{i}</div>
-                <div class="action-text">{action_text}</div>
-            </div>
-            ''', unsafe_allow_html=True)
-    
-    # AI Enhanced badge
-    if report.ai_enhanced:
-        st.markdown('''
-        <div class="ai-badge">
-            <span>🤖</span>
-            <span>Enhanced with AI (Llama 3)</span>
-        </div>
-        ''', unsafe_allow_html=True)
-    
-    # Export option
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-    
-    gen = ReportGenerator()
-    markdown_report = gen.format_markdown_report(report)
-    
-    st.download_button(
-        label="📥 Export Report",
-        data=markdown_report,
-        file_name=f"reddit_analysis_{report.subreddit}_{report.timestamp[:10]}.md",
-        mime="text/markdown"
-    )
-    
-
-
-
-# ============================================================================
-# RUN ANALYSIS ON BUTTON CLICK
-# ============================================================================
-if analyze_button:
-    if not subreddit.strip():
-        st.error("Please enter a subreddit name")
-    else:
-        report = run_analysis(
-            subreddit=subreddit.strip(),
-            post_limit=post_limit,
-            comments_per_post=comments_per_post,
-            mode=analysis_mode,
-            use_ml=use_ml,
-            use_ai=use_ai
-        )
+        st.markdown("**📋 User Pain**")
+        st.info(ticket.pm_analysis.user_pain)
         
-        if report:
-            display_report(report)
-else:
-    # Premium empty state
-    st.markdown('''
-    <div class="empty-state">
-        <h2>Ready to Analyze</h2>
-        <p>Configure your analysis settings in the sidebar and click "Analyze Subreddit" to transform Reddit discussions into actionable insights.</p>
-    </div>
-    ''', unsafe_allow_html=True)
+        st.markdown("**🔍 Technical Hypothesis**")
+        st.warning(ticket.pm_analysis.technical_hypothesis)
+        
+        st.markdown("**✅ Strategic Recommendation**")
+        st.success(ticket.pm_analysis.strategic_recommendation)
+        
+        with st.expander("📎 Evidence"):
+            st.markdown(f"> *\"{ticket.evidence.direct_quote}\"*")
+            st.markdown(f"— **{ticket.evidence.user}**")
+            if ticket.evidence.source_url:
+                st.markdown(f"[🔗 View Original Post]({ticket.evidence.source_url})")
 
+def render_differentiation_matrix(comp: CompetitorIntelligence):
+    st.subheader("⚔️ Differentiation Matrix")
+    
+    for item in comp.differentiation_matrix:
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([2, 1, 3])
+            
+            with col1:
+                st.markdown(f"**{item.feature}**")
+            with col2:
+                if item.winner.lower() == "source":
+                    st.success("✅ You Win")
+                else:
+                    st.error("❌ They Win")
+            with col3:
+                st.caption(item.insight)
+            
+            if item.evidence_quote:
+                st.markdown(f"> *\"{item.evidence_quote}\"*")
 
+def render_results(dashboard: StrategyDashboard, post_count: int):
+    render_metrics(dashboard, post_count)
+    st.divider()
+    
+    meta = dashboard.dashboard_meta
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📅 **Period:** {meta.analysis_period}")
+    with col2:
+        if meta.battleground_detected:
+            st.success(f"🎯 **Battleground:** {meta.battleground_detected}")
+    
+    if meta.compatibility_warning:
+        st.warning(f"⚠️ {meta.compatibility_warning}")
+    
+    st.divider()
+    
+    if dashboard.competitor_intelligence and dashboard.competitor_intelligence.active:
+        render_differentiation_matrix(dashboard.competitor_intelligence)
+        st.divider()
+    
+    tickets = dashboard.product_tickets
+    
+    p0_tickets = [t for t in tickets if 'P0' in t.status_badge.severity.upper()]
+    if p0_tickets:
+        st.subheader(f"🔴 P0 - Critical ({len(p0_tickets)})")
+        for ticket in p0_tickets:
+            render_ticket(ticket)
+    
+    p1_tickets = [t for t in tickets if 'P1' in t.status_badge.severity.upper()]
+    if p1_tickets:
+        st.subheader(f"🟠 P1 - High ({len(p1_tickets)})")
+        for ticket in p1_tickets:
+            render_ticket(ticket)
+    
+    p2_tickets = [t for t in tickets if 'P2' in t.status_badge.severity.upper()]
+    if p2_tickets:
+        with st.expander(f"🟡 P2 - Medium ({len(p2_tickets)})"):
+            for ticket in p2_tickets:
+                render_ticket(ticket)
 
-# Footer (always visible)
-st.markdown('''
-<div class="footer">
-    <div class="footer-text">
-        Built with <span class="footer-accent">♥</span> by <span class="footer-accent">Atharv Tripathi</span>
-    </div>
-</div>
-''', unsafe_allow_html=True)
+def main():
+    setup_page()
+    source, competitor, days_back, min_comments, max_posts = render_sidebar()
+    api_key = get_api_key()
+    
+    render_header()
+    
+    if not api_key:
+        st.warning("⚠️ Add GROQ_API_KEY to `.streamlit/secrets.toml`")
+        st.code('GROQ_API_KEY = "your-api-key-here"', language="toml")
+        st.stop()
+    
+    fetcher = HighSignalFetcher()
+    engine = StrategyIntelligenceEngine(api_key)
+    
+    btn_text = f"🚀 Analyze r/{source}" + (f" vs r/{competitor}" if competitor else "")
+    
+    if st.button(btn_text, type="primary", use_container_width=True):
+        with st.status("🔍 Running Strategy Analysis...", expanded=True) as status:
+            def log(m): st.write(m)
+            
+            source_posts = fetcher.fetch_high_signal_posts(source, days_back, min_comments, max_posts, log)
+            if not source_posts:
+                status.update(label="❌ No high-signal data found", state="error")
+                st.stop()
+            
+            comp_posts = None
+            if competitor:
+                log(f"📡 Scanning r/{competitor}...")
+                comp_posts = fetcher.fetch_high_signal_posts(competitor, days_back, min_comments, max_posts, log)
+            
+            dashboard = engine.analyze(source_posts, source, comp_posts, competitor, days_back, log)
+            
+            if not dashboard:
+                status.update(label="❌ Analysis failed", state="error")
+                st.stop()
+            
+            st.session_state['dashboard'] = dashboard
+            st.session_state['post_count'] = len(source_posts)
+            
+            status.update(label="✅ Strategy Analysis Complete!", state="complete")
+        
+        st.balloons()
+    
+    if 'dashboard' in st.session_state:
+        render_results(st.session_state['dashboard'], st.session_state['post_count'])
+
+if __name__ == "__main__":
+    main()

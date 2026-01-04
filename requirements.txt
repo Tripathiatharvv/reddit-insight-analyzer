@@ -1,5 +1,7 @@
 streamlit
 requests
-nltk
+pandas
+spacy
 textblob
+vaderSentiment
 groq
