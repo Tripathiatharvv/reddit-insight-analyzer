@@ -5,3 +5,4 @@ spacy
 textblob
 vaderSentiment
 groq
+tiktoken

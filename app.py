@@ -18,9 +18,109 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+
 GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_DAYS_BACK = 30
 DEFAULT_MIN_COMMENTS = 5
+
+class SmartBuffer:
+    """
+    Optimizes data to fit within Groq's Free Tier limits.
+    3-Layer Sieve:
+    1. Pain Scorer - Prioritize bug reports, filter noise
+    2. Smart Truncation - Keep first 1000 chars
+    3. Token Accountant - Stay within budget
+    """
+    
+    SIGNAL_KEYWORDS = [
+        "crash", "bug", "fail", "error", "broken", "slow", "lag", "battery", 
+        "drain", "overheat", "glitch", "stuck", "freeze", "wifi", "bluetooth",
+        "update", "screen", "dead", "issue", "problem", "return", "refund",
+        "fix", "help", "cant", "can't", "won't", "wont", "doesn't", "doesnt"
+    ]
+    
+    NOISE_KEYWORDS = [
+        "wallpaper", "case", "shipping", "arrived", "photo", "look", "design",
+        "delivery", "bought", "joined", "family", "happy", "color", "aesthetic",
+        "beautiful", "love", "amazing", "awesome", "great", "best"
+    ]
+
+    def __init__(self, model_limit=5000):
+        self.token_limit = model_limit
+        if TIKTOKEN_AVAILABLE:
+            self.encoder = tiktoken.get_encoding("cl100k_base")
+        else:
+            self.encoder = None
+
+    def _count_tokens(self, text: str) -> int:
+        if self.encoder:
+            return len(self.encoder.encode(text))
+        return len(text) // 4  # Rough estimate: 4 chars per token
+
+    def _calculate_pain_score(self, text: str) -> int:
+        text_lower = text.lower()
+        score = 0
+        
+        for word in self.SIGNAL_KEYWORDS:
+            if word in text_lower:
+                score += 10
+        
+        for word in self.NOISE_KEYWORDS:
+            if word in text_lower:
+                score -= 100
+                
+        return score
+
+    def optimize(self, posts: list, progress_callback=None) -> list:
+        if progress_callback:
+            progress_callback(f"📉 Optimizing {len(posts)} posts for token budget...")
+        
+        scored_posts = []
+        
+        for post in posts:
+            full_text = post.text
+            score = self._calculate_pain_score(full_text)
+            
+            # Filter noise posts
+            if score < 0:
+                continue
+            
+            # Truncate long text
+            if len(full_text) > 1000:
+                truncated_text = full_text[:1000] + "... [TRUNCATED]"
+            else:
+                truncated_text = full_text
+            
+            scored_posts.append({
+                "original_data": post,
+                "optimized_text": truncated_text,
+                "score": score,
+                "tokens": self._count_tokens(truncated_text)
+            })
+        
+        # Sort by pain score (most painful first)
+        scored_posts.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Fill token budget
+        final_payload = []
+        current_tokens = 500  # Reserve for system prompt
+        
+        for item in scored_posts:
+            if current_tokens + item['tokens'] < self.token_limit:
+                final_payload.append(item['original_data'])
+                current_tokens += item['tokens']
+            else:
+                break
+        
+        if progress_callback:
+            progress_callback(f"✅ Selected {len(final_payload)} high-value posts ({current_tokens} tokens)")
+        
+        return final_payload
 
 @dataclass
 class Evidence:
@@ -162,7 +262,7 @@ class HighSignalFetcher:
     PULLPUSH_URL = "https://api.pullpush.io/reddit/search/submission/"
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
+        'Accept': '*/*'
     }
     
     def __init__(self):
@@ -172,26 +272,135 @@ class HighSignalFetcher:
     def fetch_high_signal_posts(self, subreddit: str, days_back: int = DEFAULT_DAYS_BACK,
                                  min_comments: int = DEFAULT_MIN_COMMENTS, max_posts: int = 50,
                                  progress_callback=None) -> List[CleanPost]:
+        
+        # TRY 1: Reddit RSS (Primary - Real-time data, cloud-friendly)
+        posts = self._try_reddit_rss(subreddit, min_comments, max_posts, progress_callback)
+        if posts:
+            return posts
+        
+        # TRY 2: PullPush (Fallback - Historical archive)
+        if progress_callback:
+            progress_callback("⚠️ RSS failed, trying PullPush archive...")
+        return self._try_pullpush(subreddit, min_comments, max_posts, progress_callback)
+    
+    def _try_reddit_rss(self, subreddit: str, min_comments: int, max_posts: int, cb=None) -> List[CleanPost]:
         try:
-            if progress_callback:
-                progress_callback(f"📡 Connecting to PullPush for r/{subreddit}...")
+            if cb:
+                cb(f"📡 Fetching Reddit RSS for r/{subreddit}...")
+            
+            url = f"https://www.reddit.com/r/{subreddit}/new/.rss"
+            response = self.session.get(url, timeout=10)
+            
+            if response.status_code != 200:
+                if cb:
+                    cb(f"⚠️ RSS returned {response.status_code}")
+                return []
+            
+            content = response.text
+            
+            # Parse RSS entries using regex (lightweight, no external XML lib needed)
+            entries = re.findall(r'<entry>(.*?)</entry>', content, re.DOTALL)
+            
+            if not entries:
+                if cb:
+                    cb("⚠️ No entries in RSS feed")
+                return []
+            
+            if cb:
+                cb(f"📥 Downloaded {len(entries)} posts from RSS")
+            
+            clean_data = []
+            for entry in entries:
+                # Extract fields from RSS entry
+                title_match = re.search(r'<title>([^<]*)</title>', entry)
+                link_match = re.search(r'<link href="([^"]*)"', entry)
+                author_match = re.search(r'<name>([^<]*)</name>', entry)
+                updated_match = re.search(r'<updated>([^<]*)</updated>', entry)
+                content_match = re.search(r'<content[^>]*>(.*?)</content>', entry, re.DOTALL)
+                
+                if not title_match or not link_match:
+                    continue
+                
+                title = title_match.group(1).strip()
+                url = link_match.group(1).strip()
+                author = author_match.group(1).strip() if author_match else "unknown"
+                
+                # Extract body from content (RSS has HTML, clean it up)
+                body = ""
+                if content_match:
+                    html_content = content_match.group(1)
+                    # Remove HTML tags
+                    body = re.sub(r'<[^>]+>', ' ', html_content)
+                    body = re.sub(r'&lt;', '<', body)
+                    body = re.sub(r'&gt;', '>', body)
+                    body = re.sub(r'&amp;', '&', body)
+                    body = re.sub(r'&#39;', "'", body)
+                    body = re.sub(r'&quot;', '"', body)
+                    body = re.sub(r'\s+', ' ', body).strip()[:1000]
+                
+                # Extract date
+                date_str = ""
+                if updated_match:
+                    try:
+                        date_str = updated_match.group(1)[:10]
+                    except:
+                        date_str = datetime.now().strftime('%Y-%m-%d')
+                
+                # Extract post ID from URL
+                post_id_match = re.search(r'/comments/([a-z0-9]+)/', url)
+                post_id = post_id_match.group(1) if post_id_match else ""
+                
+                # Skip short content
+                if len(title) + len(body) < 15:
+                    continue
+                
+                # RSS doesn't give comment count, so we include all and filter less strictly
+                clean_data.append(CleanPost(
+                    id=post_id,
+                    text=f"TITLE: {title}\nBODY: {body}",
+                    url=url,
+                    author=f"u/{author.replace('/u/', '')}",
+                    comments=0,  # RSS doesn't provide this
+                    date=date_str
+                ))
+                
+                if len(clean_data) >= max_posts:
+                    break
+            
+            if cb:
+                if clean_data:
+                    cb(f"✅ Got {len(clean_data)} posts from Reddit RSS")
+                else:
+                    cb("⚠️ No valid posts in RSS")
+            
+            return clean_data
+            
+        except Exception as e:
+            if cb:
+                cb(f"⚠️ RSS error: {str(e)[:50]}")
+            return []
+    
+    def _try_pullpush(self, subreddit: str, min_comments: int, max_posts: int, cb=None) -> List[CleanPost]:
+        try:
+            if cb:
+                cb(f"📡 Connecting to PullPush for r/{subreddit}...")
             
             params = {"subreddit": subreddit, "sort": "desc", "sort_type": "score", "size": 500}
             response = self.session.get(self.PULLPUSH_URL, params=params, timeout=15)
             
             if response.status_code != 200:
-                if progress_callback:
-                    progress_callback(f"❌ API Error: {response.status_code}")
+                if cb:
+                    cb(f"❌ PullPush Error: {response.status_code}")
                 return []
             
             raw_data = response.json().get('data', [])
             if not raw_data:
-                if progress_callback:
-                    progress_callback("❌ No data from API")
+                if cb:
+                    cb("❌ No data from PullPush")
                 return []
             
-            if progress_callback:
-                progress_callback(f"📥 Downloaded {len(raw_data)} posts")
+            if cb:
+                cb(f"📥 Downloaded {len(raw_data)} posts from PullPush")
             
             clean_data = []
             for post in raw_data:
@@ -222,17 +431,17 @@ class HighSignalFetcher:
                 if len(clean_data) >= max_posts:
                     break
             
-            if progress_callback:
+            if cb:
                 if clean_data:
-                    progress_callback(f"🛡️ Filtered to {len(clean_data)} High-Signal Posts")
+                    cb(f"🛡️ Filtered to {len(clean_data)} High-Signal Posts")
                 else:
-                    progress_callback(f"⚠️ Found {len(raw_data)} posts, but 0 passed filters")
+                    cb(f"⚠️ Found {len(raw_data)} posts, but 0 passed filters")
             
             return clean_data
             
         except Exception as e:
-            if progress_callback:
-                progress_callback(f"❌ Error: {e}")
+            if cb:
+                cb(f"❌ PullPush Error: {e}")
             return []
 
 class StrategyIntelligenceEngine:
@@ -372,8 +581,12 @@ def render_sidebar():
         st.subheader("💬 Engagement Filter")
         min_comments = st.slider("Min comments", 1, 20, 5, 1)
         
-        st.subheader("📊 Depth")
-        max_posts = st.slider("Max posts", 10, 100, 30, 10)
+        st.subheader("📊 Posts to Analyze")
+        if enable_comp:
+            max_posts = st.slider("Max posts per subreddit", 5, 20, 20, 5)
+            st.caption("⚔️ Comparison mode: 20 max per subreddit")
+        else:
+            max_posts = st.slider("Max posts", 10, 40, 30, 10)
         
         return source, competitor if enable_comp else "", min_comments, max_posts
 
@@ -573,8 +786,8 @@ def main():
         with st.status("🔍 Running Strategy Analysis...", expanded=True) as status:
             def log(m): st.write(m)
             
-            # Limit posts: 20 each for comparison, 50 for single analysis
-            effective_max = min(max_posts, 20) if competitor else min(max_posts, 50)
+            # Limit posts: 20 each for comparison, 40 for single analysis
+            effective_max = min(max_posts, 20) if competitor else min(max_posts, 40)
             
             source_posts = fetcher.fetch_high_signal_posts(source, 30, min_comments, effective_max, log)
             if not source_posts:
@@ -586,7 +799,19 @@ def main():
                 log(f"📡 Scanning r/{competitor}...")
                 comp_posts = fetcher.fetch_high_signal_posts(competitor, 30, min_comments, effective_max, log)
             
-            dashboard = engine.analyze(source_posts, source, comp_posts, competitor, 30, log)
+            # OPTIMIZE: Apply SmartBuffer 3-Layer Sieve
+            buffer = SmartBuffer(model_limit=5000)
+            optimized_source = buffer.optimize(source_posts, log)
+            
+            optimized_comp = None
+            if comp_posts:
+                optimized_comp = buffer.optimize(comp_posts, log)
+            
+            if not optimized_source:
+                status.update(label="⚠️ All posts filtered as noise", state="error")
+                st.stop()
+            
+            dashboard = engine.analyze(optimized_source, source, optimized_comp, competitor, 30, log)
             
             if not dashboard:
                 status.update(label="❌ Analysis failed", state="error")
